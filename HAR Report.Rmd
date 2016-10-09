@@ -1,0 +1,224 @@
+---
+title: "Machine Learning Course Project"
+author: "Human Activity Recognition"
+output: html_document
+---
+
+## Load necessary packages
+
+```{r, results = "hide", message = FALSE, warning = FALSE} 
+library(caret)
+library(rpart)
+library(randomForest)
+library(knitr)
+```
+
+## The Background
+
+Using devices such as *Jawbone Up*, *Nike FuelBand*, and *Fitbit* it is now possible to collect a large amount of data about personal activity relatively inexpensively. These type of devices are part of the quantified self movement – a group of enthusiasts who take measurements about themselves regularly to improve their health, to find patterns in their behavior, or because they are tech geeks. One thing that people regularly do is quantify how much of a particular activity they do, but they rarely quantify how well they do it. In this project, your goal will be to use data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants. They were asked to perform barbell lifts correctly and incorrectly in 5 different ways. More information is available from the website here: http://groupware.les.inf.puc-rio.br/har (see the section on the Weight Lifting Exercise Dataset).
+
+## The Goal
+
+The goal of this analysis is to use existing machine learning algorithms to accurately assess how well an excercise is performed, using a wide array of data collected from "on-body" sensors. I will also attempt to accurately estimate the expected out of sample error.
+
+## The Data
+
+### Source
+
+All data and information can be found here: http://groupware.les.inf.puc-rio.br/har
+
+The training dataset can be found here: https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv
+
+The test dataset can be found here: https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv
+
+### Load
+
+```{r}
+in_sample <- read.csv("http://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv", na.strings=c("NA","#DIV/0!",""))
+out_of_sample <- read.csv("http://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv", na.strings=c("NA","#DIV/0!",""))
+```
+
+### Partition Data
+
+First off we will subset the data into a training and testing set.
+
+```{r}
+set.seed(7327)
+inTrain <- createDataPartition(y=in_sample$classe, p=0.7, list=FALSE)
+training <- in_sample[inTrain, ]
+testing <- in_sample[-inTrain, ]
+```
+
+### Exploratory Analysis
+
+### Outcome Variable
+
+The "classe" variable is a factor variable with 5 levels: A, B, C, D, E. Class A represents an exercise performed with appropriate form, while classes B, C, D, E represent common mistakes people make while performing an exercise.
+
+```{r}
+str(training$class)
+length(training$class) / nrow(training)
+```
+
+### Predictor Variables
+
+The data is collected from sensors placed on the participants' body and on the dumbell being used.
+
+![](http://groupware.les.inf.puc-rio.br/static/WLE/on-body-sensing-schema.png)
+
+Looking at the column names in the training set, we can see a pattern:
+
+```{r}
+names(training)[!names(training) %in% c("X", "user_name", "raw_timestamp_part_1", "raw_timestamp_part_2", "cvtd_timestamp", "new_window", "num_window")]
+```
+
+The predictor variables are derivations of data collected from each of the sensors and include the recurring keywords: belt, arm, dumbbell, forearm. It includes a wealth of information related to the movement of these sensors.
+
+### Cleaning the Data
+
+In order to ensure the analysis goes smoothly, I will first look for any opportunities to deal with potential problems in the data up front.
+
+```{r}
+str(training)
+```
+
+First and foremost we can see that there are a handful of variables that likely won't be useful in the analysis going forward, so we will remove those variables.
+
+```{r}
+uselessVars <- c("X", "user_name", "raw_timestamp_part_1", "raw_timestamp_part_2", "cvtd_timestamp", "new_window", "num_window")
+training <- training[, !names(training) %in% uselessVars]
+```
+
+We can also see that R imported several columns as class logical, probably due to the data being entirely NA. Next we will identify and remove variables with little variation and therefore little predictive power. Variables that are entirely NA will be captured by this process.
+
+```{r}
+staticVars <- names(training)[nearZeroVar(training)]
+training <- training[, !names(training) %in% staticVars]
+```
+
+To ensure that the our model building goes smoothly, we will coerce the predictors to class numeric.
+
+```{r}
+training[, -grep("classe", names(training))] <- apply(training[, -grep("classe", names(training))], 2, as.numeric)
+```
+
+We will now impute missing values in our data. To do this, we need to drop any factors that are overwhelmingly NA. We will set the cutoff at 50%.
+
+```{r, results = "hide"}
+# Calculate the % of NAs for each predictor
+missingCounts <- apply(training[, !names(training) %in% c("classe")], 2, function(x) {sum(is.na(x)) / length(x)})
+missingVars <- names(missingCounts)[missingCounts > .5]
+
+# Remove predictors with less than 50% coverage
+training <- training[, !names(training) %in% missingVars]
+
+# Impute missing values, if there are any
+tryCatch(training <- rfImpute(classe ~ ., data = training), error = function(e) NULL)
+```
+
+
+Now we will perform the same operations on the test set, to maintain consistency between the two datasets.
+
+```{r, results = "hide"}
+# Remove unecessary or invalid columns
+testing <- testing[, !names(testing) %in% c(uselessVars, staticVars)]
+
+# Coerce columns to numeric
+testing[, -grep("classe", names(testing))] <- apply(testing[, -grep("classe", names(testing))], 2, as.numeric)
+
+# Remove predictors with <50% coverage
+testing <- testing[, !names(testing) %in% missingVars] 
+
+# Impute missing values, if there are any
+tryCatch(testing <- rfImpute(classe ~ ., data = testing), error = function(e) NULL)
+```
+
+## The Model
+
+### Classification Tree
+
+We will start off our algorithm with a Classification Tree.
+
+```{r}
+# Build the model on the training set
+ctmodFit <- rpart(classe ~ ., data = training, method = "class")
+
+# Predict values for the test set
+ctPredtest <- predict(ctmodFit, testing, type = "class")
+
+# Predict values for the training set
+ctPredtrain <- predict(ctmodFit, training, type = "class")
+```
+
+Now that we have the model built, let's look at the training and test set accuracy.
+
+**First the accuracy on the test set:**
+```{r}
+confusionMatrix(ctPredtest, testing$classe)
+```
+
+**Next the accuracy on the training set:**
+```{r}
+confusionMatrix(ctPredtrain, training$classe)
+```
+
+We can see that our accuracy predicting the training set is very similar to the accuracy predicting the testing set, which is a good indication that our bias is low. However, let's see if we can add some predictive power using a more powerful method.
+
+### Random Forest
+
+To see if we can cut down on our out-of-sample error, let's try using a Random Forest approach instead of a simple classification tree.
+
+```{r}
+# Build the model on the training set
+rfmodFit <- randomForest(classe ~ ., data = training)
+
+# Predict values for the training set
+rfPredtrain <- predict(rfmodFit, training, type = "class")
+
+# Predict values for the test set
+rfPredtest <- predict(rfmodFit, testing, type = "class")
+```
+
+Now that we have the model built, let's look at the training and test set accuracy.
+
+**First the accuracy on the test set:**
+```{r}
+confusionMatrix(rfPredtest, testing$classe)
+```
+
+**Next the accuracy on the training set:**
+```{r}
+confusionMatrix(rfPredtrain, training$classe)
+```
+
+
+## Out of Sample Error
+
+Using a random forest approach we have managed to cut down our error rate significantly. If the result from predicting the test set is a reliable indicator, we can hope our out of sample error rate will be roughly 0.41%.
+
+Before we apply our model to the out of sample data set, we need to clean the data first in the same ways we cleaned our training data set.
+
+```{r, results = "hide"}
+# Remove unecessary or invalid columns
+out_of_sample <- out_of_sample[, !names(out_of_sample) %in% c(uselessVars, staticVars)]
+
+# Coerce columns to numeric
+out_of_sample[, -grep("classe", names(out_of_sample))] <- apply(out_of_sample[, -grep("classe", names(out_of_sample))], 2, as.numeric)
+
+# Remove predictors with <50% coverage
+out_of_sample <- out_of_sample[, !names(out_of_sample) %in% missingVars] 
+
+# Impute missing values, if there are any
+tryCatch(out_of_sample <- rfImpute(classe ~ ., data = out_of_sample), error = function(e) NULL)
+```
+
+Now let's apply our model to the cleaned oos data.
+
+```{r}
+rfPredoos <- predict(rfmodFit, out_of_sample, type = "class")
+rfPredoos
+```
+
+
+
+
